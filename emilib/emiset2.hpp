@@ -683,7 +683,7 @@ public:
         //auto old_num_buckets = _num_buckets;
         auto old_states      = _states;
         auto old_keys        = _keys;
-        auto max_probe_length = _max_probe_length;
+        //auto max_probe_length = _max_probe_length;
 
         _num_filled  = 0;
         _num_buckets = num_buckets;

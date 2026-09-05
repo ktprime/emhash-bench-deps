@@ -1,10 +1,10 @@
 // LICENSE:
 // version 1.0.3
-// https://github.com/ktprime/emhash/blob/master/thirdparty/emilib/emilib2o.hpp
+// https://github.com/ktprime/emhash/blob/master/thirdparty/emilib/emiset2s.hpp
 //
 // Licensed under the MIT License <http://opensource.org/licenses/MIT>.
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2021-2026 Huang Yuanbing & bailuzhou AT 163.com
+// Copyright (c) 2021-2025 Huang Yuanbing & bailuzhou AT 163.com
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -22,13 +22,11 @@
 // AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE
 
 #pragma once
 
 #include <cstdlib>
 #include <cstring>
-#include <cstdint>
 #include <iterator>
 #include <utility>
 #include <cassert>
@@ -69,14 +67,14 @@ namespace emilib2 {
 #ifndef EMH_DEFAULT_LOAD_FACTOR
     constexpr static float EMH_DEFAULT_LOAD_FACTOR = 0.84f;
 #endif
-    constexpr static float EMH_MAX_LOAD_FACTOR = 0.999f;
     constexpr static float EMH_MIN_LOAD_FACTOR = 0.25f;
+    constexpr static float EMH_MAX_LOAD_FACTOR = 0.999f;
 
     constexpr static uint8_t MAP_BITS = 253;
     constexpr static uint8_t EMPTY_OFFSET = 0;
 
-#if EMH_OFFSET_STEP <= 0
-    constexpr static uint8_t EMH_OFFSET_STEP = 4;
+#if EMH_OFFSET_STEP == 0
+    constexpr static uint8_t OFFSET_STEP = 8;
 #endif
 
 #if AVX2_EHASH == 0
@@ -104,6 +102,7 @@ namespace emilib2 {
     #define MOVEMASK_EPI8  _mm256_movemask_epi8
     #define CMPEQ_EPI8     _mm256_cmpeq_epi8
     #define CMPGT_EPI8     _mm256_cmpgt_epi8
+
 #elif AVX512_EHASH
     const static auto simd_empty  = _mm512_set1_epi8(EEMPTY);
     const static auto simd_delete = _mm512_set1_epi8(EDELETE);
@@ -431,7 +430,7 @@ public:
         _mlf        = other._mlf;
         const auto state_size = simd_bytes + _num_buckets;
         memcpy(_states, other._states, state_size * sizeof(_states[0]));
-        memcpy(_offset, other._offset, _num_buckets * sizeof(_offset[0]) / EMH_OFFSET_STEP + 1);
+        memcpy(_offset, other._offset, _num_buckets * sizeof(_offset[0]) / OFFSET_STEP + 1);
     }
 
     void swap(HashMap& other) noexcept
@@ -673,12 +672,14 @@ public:
     template<class... Args>
     std::pair<iterator, bool> try_emplace(const KeyT& key, Args&&... args) noexcept
     {
+        //check_expand_need();
         return do_insert(key, std::forward<Args>(args)...);
     }
 
     template<class... Args>
     std::pair<iterator, bool> try_emplace(KeyT&& key, Args&&... args) noexcept
     {
+        //check_expand_need();
         return do_insert(std::forward<KeyT>(key), std::forward<Args>(args)...);
     }
 
@@ -748,6 +749,8 @@ public:
 
     bool set_get(const KeyT& key, const ValueT& val, ValueT& oldv) noexcept
     {
+        //check_expand_need();
+
         bool bempty = true;
         const auto bucket = find_or_allocate(key, bempty);
         /* Check if inserting a new value rather than overwriting an old entry */
@@ -829,7 +832,7 @@ public:
 #elif 0
         if (EMH_UNLIKELY(_num_filled == 0)) {
             std::fill_n(_states, _num_buckets, State::EEMPTY);
-            std::fill_n(_offset, _num_buckets / EMH_OFFSET_STEP + 1, EMPTY_OFFSET);
+            std::fill_n(_offset, _num_buckets / OFFSET_STEP + 1, EMPTY_OFFSET);
         }
 #endif
     }
@@ -877,9 +880,7 @@ public:
     void clear_meta() noexcept
     {
          std::fill_n(_states, _num_buckets, State::EEMPTY);
-         //set last simd_bytes sentinel/tombstone
-         std::fill_n(_states + _num_buckets, simd_bytes, State::ESENTINEL);
-         std::fill_n(_offset, _num_buckets / EMH_OFFSET_STEP + 1, EMPTY_OFFSET);
+         std::fill_n(_offset, _num_buckets / OFFSET_STEP + 1, EMPTY_OFFSET);
         _num_filled = 0;
     }
 
@@ -921,7 +922,7 @@ public:
     void dump_statics() const
     {
         int off[256] = {0};
-        const auto off_groups = _num_buckets / EMH_OFFSET_STEP + 1;
+        const auto off_groups = _num_buckets / OFFSET_STEP + 1;
         for (int i = 0; i < off_groups; i++)
             off[_offset[i]]++;
 
@@ -959,7 +960,7 @@ public:
             std::abort(); //throw std::length_error("too large size");
 
         const auto num_buckets = (size_t)buckets;
-        const auto* new_data = (char*)malloc(pairs_size + state_size * sizeof(_states[0]) + (state_size / EMH_OFFSET_STEP) * sizeof(_offset[0]));
+        const auto* new_data = (char*)malloc(pairs_size + state_size * sizeof(_states[0]) + (state_size / OFFSET_STEP) * sizeof(_offset[0]));
         auto old_states      = _states;
 
         auto* new_pairs = (decltype(_pairs)) new_data;
@@ -970,11 +971,17 @@ public:
         auto old_pairs       = _pairs;
         auto old_buckets     = _num_buckets;
 
+        _num_filled  = 0;
         _num_buckets = num_buckets;
         _mask        = num_buckets - 1;
         _pairs       = new_pairs;
 
-        clear_meta();
+        //init empty
+        std::fill_n(_states, num_buckets, State::EEMPTY);
+        //set last simd_bytes sentinel/tombstone
+        std::fill_n(_states + num_buckets, simd_bytes, State::ESENTINEL);
+        //fill offset to 0
+        std::fill_n(_offset, num_buckets / OFFSET_STEP + 1, EMPTY_OFFSET);
 
         {
             //TODO: set last packet tombstone. not equal key h2
@@ -1025,19 +1032,19 @@ private:
     inline uint32_t get_offset(size_t main_bucket) const noexcept
     {
 #if EMH_SAFE_PSL
-        if (EMH_UNLIKELY(_offset[main_bucket / EMH_OFFSET_STEP] > 128))
-            return (_offset[main_bucket / EMH_OFFSET_STEP] - 127) * 128;
+        if (EMH_UNLIKELY(_offset[main_bucket / OFFSET_STEP] > 128))
+            return (_offset[main_bucket / OFFSET_STEP] - 127) * 128;
 #endif
-        return _offset[main_bucket / EMH_OFFSET_STEP];
+        return _offset[main_bucket / OFFSET_STEP];
     }
 
     inline void set_offset(size_t main_bucket, uint32_t off) noexcept
     {
 #if EMH_SAFE_PSL
         assert(off / 128 < 128);
-        _offset[main_bucket / EMH_OFFSET_STEP] = off <= 128 ? off : 128 + off / 128;
+        _offset[main_bucket / OFFSET_STEP] = off <= 128 ? off : 128 + off / 128;
 #else
-        _offset[main_bucket / EMH_OFFSET_STEP] = (uint8_t)off;
+        _offset[main_bucket / OFFSET_STEP] = (uint8_t)off;
 #endif
     }
 
@@ -1051,13 +1058,7 @@ private:
 #if EMH_SAFE_PSL
         next_bucket += simd_bytes * offset;
 #elif EMH_PSL_LINEAR == 0
-        if (offset < 5)
-            next_bucket += simd_bytes * offset;
-        else {
-            // Odd step: GCD(step, _num_buckets)=1 guarantees full coverage
-            // |1 ensures odd, coprime with any power-of-2 _num_buckets
-            next_bucket += (_num_buckets / 11 + 1) | 1;
-        }
+        next_bucket += offset < 5 ? simd_bytes * offset: _num_buckets / 11 + 1;
 #elif EMH_PSL_LINEAR == 1
         if (offset < 8)
             next_bucket += simd_bytes * 2 + offset;
@@ -1136,7 +1137,7 @@ private:
         const auto key_h2 = hash_key2(main_bucket, key);
         prefetch_heap_block((char*)&_pairs[main_bucket]);
         const auto filled = SET1_EPI32(0x01010101u * (uint8_t)key_h2);
-        auto next_bucket = main_bucket, offset = (size_t)0u;
+        auto next_bucket = main_bucket, offset = 0u;
         constexpr size_t chole = (size_t)-1;
         size_t hole = chole;
 
